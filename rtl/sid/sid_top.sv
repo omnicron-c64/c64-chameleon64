@@ -241,6 +241,8 @@ sid_tables #(MULTI_FILTERS) sid_tables
 	.mode(mode[n]),
 
 	.acc_t(f_acc_t),
+	.acc_next(acc_t[state[3:1]]),                 // index stage runs in the f_acc_t load state
+	.mode_next(mode[DUAL && (state[3:1] >= 3)]),  // voices 3-5 belong to the second SID
 	._st_out(f__st_out),
 	.p_t_out(f_p_t_out),
 	.ps__out(f_ps__out),

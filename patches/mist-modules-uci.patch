@@ -1,0 +1,34 @@
+diff --git a/mist.vhd b/mist.vhd
+index 037ba2f..254579b 100644
+--- a/mist.vhd
++++ b/mist.vhd
+@@ -28,6 +28,7 @@ port (
+ 	conf_str          : in std_logic_vector(8*STRLEN-1 downto 0) := (others => '0');
+ 	conf_addr         : out std_logic_vector(10 downto 0);
+ 	conf_chr          : in  std_logic_vector( 7 downto 0) := (others => '0');
++	uci_dout          : in  std_logic_vector( 7 downto 0) := (others => '0');
+ 	joystick_0        : out std_logic_vector(31 downto 0);
+ 	joystick_1        : out std_logic_vector(31 downto 0);
+ 	joystick_2        : out std_logic_vector(31 downto 0);
+diff --git a/user_io.v b/user_io.v
+index cae2396..d43fed3 100644
+--- a/user_io.v
++++ b/user_io.v
+@@ -26,6 +26,7 @@ module user_io (
+ 	input [(8*STRLEN)-1:0] conf_str,
+ 	output      [10:0]  conf_addr, // RAM address for config string, if STRLEN=0
+ 	input        [7:0]  conf_chr,
++	input        [7:0]  uci_dout,   // reply byte for SPI commands C0-C5 (UCI bridge)
+ 
+ 	input               clk_sys, // clock for system-related messages (kbd, joy, etc...)
+ 	input               clk_sd,  // clock for SD-card related messages
+@@ -356,6 +357,9 @@ always@(posedge spi_sck or posedge SPI_SS_IO) begin : spi_transmitter
+ 			// keyboard LED status
+ 			8'h1f: spi_byte_out <= leds;
+ 
++			// UCI bridge
++			8'hc0, 8'hc1, 8'hc2, 8'hc3, 8'hc4, 8'hc5: spi_byte_out <= uci_dout;
++
+ 			// core features
+ 			8'h80:
+ 				if (byte_cnt == 0) spi_byte_out <= 8'h80;

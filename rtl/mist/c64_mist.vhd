@@ -470,6 +470,14 @@ end component progressbar;
 	signal mist_cycle: std_logic;
 	signal mist_cycle_wr: std_logic;
 	signal mist_cycleD: std_logic;
+	signal mist_wr_cycle: std_logic;
+	-- REU download FIFO (one M9K): absorbs SPI bursts while REU DMA owns the IEC slot
+	type rf_mem_t is array(0 to 511) of std_logic_vector(7 downto 0);
+	signal rf_mem : rf_mem_t;
+	signal rf_wa, rf_ra : unsigned(9 downto 0) := (others => '0');
+	signal rf_q, rf_hold : std_logic_vector(7 downto 0);
+	signal rf_we, rf_ne_d, reu_dl_busy : std_logic := '0';
+	signal mist_wr_cycleD: std_logic;
 	signal mist_cycle_rD: std_logic;
 	signal rom_loaded : std_logic;
 	signal buttons: std_logic_vector(1 downto 0);
@@ -594,6 +602,8 @@ end component progressbar;
 	signal pal_we              : std_logic;
 	signal pal_idx             : unsigned(3 downto 0);
 	signal pal_rgb             : std_logic_vector(23 downto 0);
+	signal uci_spi_dout        : std_logic_vector(7 downto 0);
+	signal uci_reu_base        : std_logic_vector(23 downto 0);
 	signal st_detach_cartdrige : std_logic;                    -- status(5)
 	signal st_cia_mode         : std_logic;                    -- status(4)
 	signal st_swap_joystick    : std_logic;                    -- status(3)
@@ -764,6 +774,20 @@ begin
 
 	-- reu uses the iec cycle (mutually exclusive with io-controller access)
 	reu_cycle <= '1' when ces ="1011" else '0';
+	-- download writes only complete in a mist slot the REU is not using
+	mist_wr_cycle <= '1' when mist_cycle = '1' and not (reu_cycle = '1' and reu_ram_ce = '1') else '0';
+
+	rf_we <= '1' when ioctl_wr = '1' and ioctl_index = FILE_REU else '0';
+	reu_dl_busy <= '1' when rf_wa /= rf_ra or ioctl_ram_wr = '1' or mist_cycle_wr = '1' else '0';
+	process(clk_c64)
+	begin
+		if rising_edge(clk_c64) then
+			if rf_we = '1' then
+				rf_mem(to_integer(rf_wa(8 downto 0))) <= ioctl_data;
+			end if;
+			rf_q <= rf_mem(to_integer(rf_ra(8 downto 0)));
+		end if;
+	end process;
 
 	sd_sdhc <= '1';
 	sd_conf <= '0';
@@ -790,6 +814,7 @@ begin
 
 		SPI_CLK => SPI_SCK,
 		SPI_SS_IO => CONF_DATA0,
+		uci_dout => uci_spi_dout,
 		SPI_MISO => SPI_DO,
 		SPI_MOSI => SPI_DI,
 
@@ -962,7 +987,13 @@ begin
 		palette_sel  => pal_sel,
 		pal_we       => pal_we,
 		pal_idx      => pal_idx,
-		pal_rgb      => pal_rgb
+		pal_rgb      => pal_rgb,
+		spi_sck      => SPI_SCK,
+		spi_ss       => CONF_DATA0,
+		spi_mosi     => SPI_DI,
+		spi_dout     => uci_spi_dout,
+		reu_base     => uci_reu_base,
+		reu_busy     => reu_dl_busy
 	);
 	vpl_download <= '1' when ioctl_download = '1' and ioctl_index = FILE_VPL else '0';
 
@@ -972,6 +1003,16 @@ begin
 
 			old_download <= ioctl_download;
 			mist_cycleD <= mist_cycle;
+			mist_wr_cycleD <= mist_wr_cycle;
+			if rf_we = '1' then
+				rf_wa <= rf_wa + 1;
+			end if;
+			if rf_wa /= rf_ra then rf_ne_d <= '1'; else rf_ne_d <= '0'; end if;
+			if ioctl_ram_wr = '0' and rf_ne_d = '1' and rf_wa /= rf_ra then
+				rf_hold <= rf_q;
+				rf_ra <= rf_ra + 1;
+				ioctl_ram_wr <= '1';
+			end if;
 			cart_hdr_wr <= '0';
 
 			-- prepare mist cycle write
@@ -986,13 +1027,15 @@ begin
 					ioctl_ram_data  <= (others => ioctl_load_addr(6));
 				elsif prg_reg_update = '1' then
 					ioctl_ram_data <= prg_data;
+				elsif ioctl_index = FILE_REU then
+					ioctl_ram_data <= rf_hold;
 				else
 					ioctl_ram_data <= ioctl_data;
 				end if;
 				mist_cycle_wr <= '1';
 			end if;
 			-- second mist cycle - SDRAM data written, disable WE on the next
-			if mist_cycle = '1' and mist_cycleD = '1' and mist_cycle_wr = '1' then
+			if mist_wr_cycle = '1' and mist_wr_cycleD = '1' and mist_cycle_wr = '1' then
 				mist_cycle_wr <= '0';
 			end if;
 
@@ -1073,10 +1116,9 @@ begin
 				if ioctl_index = FILE_REU then
 					ioctl_bs <= "10";
 					if ioctl_addr = 0 then
-						ioctl_load_addr <= (others => '0');
-						ioctl_ram_data <= ioctl_data;
+						ioctl_load_addr <= uci_reu_base; -- 0 for menu loads, set by UCI LOAD_REU
 					end if;
-					ioctl_ram_wr <= '1';
+					-- byte goes through rf_mem (pushed by rf_we)
 				end if;
 
 			end if;
@@ -1391,15 +1433,15 @@ begin
 	              std_logic_vector(unsigned(C64_ROM_START) + c64_rom_addr) when mist_cycle = '0' and rom_ce = '0' else
 	              c64_addr_temp when mist_cycle='0' else
 	              reu_ram_addr when reu_cycle='1' and reu_ram_ce='1' else
-	              ioctl_ram_addr when prg_reg_update = '1' or ioctl_download = '1' or erasing = '1' else
+	              ioctl_ram_addr when prg_reg_update = '1' or ioctl_download = '1' or erasing = '1' or reu_dl_busy = '1' else
 	              dbg_a(23 downto 0) when dbg_ce = '1' else
 	              tap_play_addr;
 	sdram_bs <= "01" when drv_cycle = '1' else
 	            "10" when reu_ram_ce='1' and reu_cycle='1' else
-	            ioctl_bs when mist_cycle_wr = '1' and mist_cycle = '1' else
+	            ioctl_bs when mist_cycle_wr = '1' and mist_wr_cycle = '1' else
 	            "01";
 	sdram_data_in( 7 downto 0) <= c64_ram_dout when mist_cycle='0' else dbg_wd when dbg_ce = '1' else ioctl_ram_data;
-	sdram_data_in(15 downto 8) <= ioctl_ram_data when mist_cycle = '1' and mist_cycle_wr = '1' else reu_ram_do;
+	sdram_data_in(15 downto 8) <= ioctl_ram_data when mist_wr_cycle = '1' and mist_cycle_wr = '1' else reu_ram_do;
 	c64_data_in <= uci_dout when uci_oe = '1' else reu_dout when reu_oe = '1' else midi_data when midi_oe = '1' else cart_data_out when cart_data_oe = '1' else sdram_data_out(7 downto 0);
 	c64_ram_din <= sdram_data_out(7 downto 0);
 

@@ -16,6 +16,13 @@ plus Ultimate 64-style extras.
   - 1 MHz while the drive motor runs and on serial-bus activity (fastloaders stay exact)
   - C128 `$D030` bit and U64-style `$D031` register in Software mode
 - **Ultimate UCI** (`$DF1C-$DF1F`, System menu) with ID `$C9`; local palette commands (target `$F0`).
+- **UCI DOS** (target `$01`) served by the 832 firmware from the SD card: IDENTIFY, OPEN/CLOSE (read only),
+  READ_DATA, FILE_INFO, CHANGE_DIR, GET_PATH, OPEN_DIR/READ_DIR and LOAD_REU. The virtual root holds
+  `/SD`, `/Usb0` (both the SD card) and `/Flash` (the SD folder `Flash`), so software written for the
+  Ultimate finds its usual paths. LOAD_REU streams through a 512-byte FIFO that the firmware paces, so
+  loads stay intact while a program keeps the REU busy (Dragon's Lair FMV plays all scenes).
+- **SID wave tables compressed** (deduplicated 16-byte blocks + index ROM, bit-exact) to free block RAM
+  for the larger firmware.
 - **Palette RAM** with a custom slot and **.vpl** (VICE palette) loading from the menu.
 - **Freezer cartridges**: Action Replay, Super Snapshot V5, Final Cartridge III, Retro Replay, Epyx FastLoad
   (fixes: cartridge SDRAM requests limited to C64 slots, Ultimax write protection from upstream MiSTer,
@@ -39,6 +46,8 @@ git clone https://github.com/robinsonb5/DeMiSTify.git ../DeMiSTify
 cd ../DeMiSTify && git checkout 4a073448b16446d642b887b9276852259f5efddf && git submodule update --init --recursive
 git apply ../c64-chameleon64/patches/demistify-chameleon-c64.patch
 cd ../c64-chameleon64 && ln -s ../DeMiSTify DeMiSTify
+git submodule update --init --recursive
+git -C rtl/mist/mist-modules apply ../../../patches/mist-modules-uci.patch
 make BOARDS=chameleon64 firmware init compile
 ```
 
