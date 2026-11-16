@@ -18,11 +18,18 @@ use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
 
 -- -----------------------------------------------------------------------
+-- Palette RAM: palettes 0-7 built in, palette 8 = custom (loaded .vpl /
+-- UCI), initialised to palette 0.  One clock of read latency.
+-- -----------------------------------------------------------------------
 
 entity fpga64_rgbcolor is
 	port (
-		palette: in unsigned(2 downto 0);
+		clk: in std_logic;
+		palette: in unsigned(3 downto 0);
 		index: in unsigned(3 downto 0);
+		we: in std_logic := '0';
+		windex: in unsigned(3 downto 0) := (others => '0');
+		wrgb: in std_logic_vector(23 downto 0) := (others => '0');
 		r: out unsigned(7 downto 0);
 		g: out unsigned(7 downto 0);
 		b: out unsigned(7 downto 0)
@@ -32,162 +39,167 @@ end fpga64_rgbcolor;
 -- -----------------------------------------------------------------------
 
 architecture Behavioral of fpga64_rgbcolor is
-begin
-	process(index, palette)
+	type pal_t is array(0 to 127) of std_logic_vector(23 downto 0);
+	constant BUILTIN : pal_t := (
+		x"000000",
+		x"ffffff",
+		x"813338",
+		x"75cec8",
+		x"8e3c97",
+		x"56ac4d",
+		x"2e2c9b",
+		x"edf171",
+		x"8e5029",
+		x"553800",
+		x"c46c71",
+		x"4a4a4a",
+		x"7b7b7b",
+		x"a9ff9f",
+		x"706deb",
+		x"b2b2b2",
+		x"000000",
+		x"f7f7f7",
+		x"8d2f34",
+		x"6ad4cd",
+		x"9835a4",
+		x"4cb442",
+		x"2c29b1",
+		x"efef5d",
+		x"984e20",
+		x"5b3800",
+		x"d1676d",
+		x"4a4a4a",
+		x"7b7b7b",
+		x"9fef93",
+		x"6d6aef",
+		x"b2b2b2",
+		x"000000",
+		x"ffffff",
+		x"68372b",
+		x"70a4b2",
+		x"6f3d86",
+		x"588d43",
+		x"352879",
+		x"b8c76f",
+		x"6f4f25",
+		x"433900",
+		x"9a6759",
+		x"444444",
+		x"6c6c6c",
+		x"9ad284",
+		x"6c5eb5",
+		x"959595",
+		x"000000",
+		x"d5d5d5",
+		x"72352c",
+		x"659fa6",
+		x"733a91",
+		x"568d35",
+		x"2e237d",
+		x"aeb75e",
+		x"774f1e",
+		x"4b3c00",
+		x"9c635a",
+		x"474747",
+		x"6b6b6b",
+		x"8fc271",
+		x"675db6",
+		x"8f8f8f",
+		x"000000",
+		x"ffffff",
+		x"7b1f32",
+		x"86dfcd",
+		x"b358c2",
+		x"49a64b",
+		x"3829ad",
+		x"c7d555",
+		x"b1743a",
+		x"533d00",
+		x"be6275",
+		x"3d3d3d",
+		x"808080",
+		x"8ce88e",
+		x"7b6cf0",
+		x"c2c2c2",
+		x"000000",
+		x"ffffff",
+		x"8d3043",
+		x"66c0ad",
+		x"90359f",
+		x"49a64b",
+		x"3829ad",
+		x"c7d555",
+		x"8e5117",
+		x"533d00",
+		x"be6275",
+		x"4e4e4e",
+		x"767676",
+		x"8ce88e",
+		x"7162e6",
+		x"a3a3a3",
+		x"000000",
+		x"ffffff",
+		x"8b3436",
+		x"65beb9",
+		x"8d36a2",
+		x"4aa646",
+		x"2d30a8",
+		x"d2cf57",
+		x"8e501b",
+		x"543d00",
+		x"bc6568",
+		x"4e4e4e",
+		x"767676",
+		x"8de989",
+		x"6669e1",
+		x"a3a3a3",
+		x"000000",
+		x"ffffff",
+		x"8b3e42",
+		x"7cd3cd",
+		x"9746a0",
+		x"5cb254",
+		x"3c39a9",
+		x"e3e76e",
+		x"945731",
+		x"593c07",
+		x"cd777c",
+		x"505050",
+		x"838383",
+		x"aff8a6",
+		x"7f7df4",
+		x"bababa"
+	);
+
+	type ram_t is array(0 to 255) of std_logic_vector(23 downto 0);
+	function ram_init return ram_t is
+		variable v : ram_t := (others => (others => '0'));
 	begin
-		case palette is
-		when "000" =>
-			case index is
-			when X"0" => r <= X"00"; g <= X"00"; b <= X"00";
-			when X"1" => r <= X"FF"; g <= X"FF"; b <= X"FF";
-			when X"2" => r <= X"81"; g <= X"33"; b <= X"38";
-			when X"3" => r <= X"75"; g <= X"ce"; b <= X"c8";
-			when X"4" => r <= X"8e"; g <= X"3c"; b <= X"97";
-			when X"5" => r <= X"56"; g <= X"ac"; b <= X"4d";
-			when X"6" => r <= X"2e"; g <= X"2c"; b <= X"9b";
-			when X"7" => r <= X"ed"; g <= X"f1"; b <= X"71";
-			when X"8" => r <= X"8e"; g <= X"50"; b <= X"29";
-			when X"9" => r <= X"55"; g <= X"38"; b <= X"00";
-			when X"A" => r <= X"c4"; g <= X"6c"; b <= X"71";
-			when X"B" => r <= X"4a"; g <= X"4a"; b <= X"4a";
-			when X"C" => r <= X"7b"; g <= X"7b"; b <= X"7b";
-			when X"D" => r <= X"a9"; g <= X"ff"; b <= X"9f";
-			when X"E" => r <= X"70"; g <= X"6d"; b <= X"eb";
-			when X"F" => r <= X"b2"; g <= X"b2"; b <= X"b2";
-			end case;
-		when "001" =>
-			case index is
-			when X"0" => r <= X"00"; g <= X"00"; b <= X"00";
-			when X"1" => r <= X"f7"; g <= X"f7"; b <= X"f7";
-			when X"2" => r <= X"8d"; g <= X"2f"; b <= X"34";
-			when X"3" => r <= X"6a"; g <= X"d4"; b <= X"cd";
-			when X"4" => r <= X"98"; g <= X"35"; b <= X"a4";
-			when X"5" => r <= X"4c"; g <= X"b4"; b <= X"42";
-			when X"6" => r <= X"2c"; g <= X"29"; b <= X"b1";
-			when X"7" => r <= X"ef"; g <= X"ef"; b <= X"5d";
-			when X"8" => r <= X"98"; g <= X"4e"; b <= X"20";
-			when X"9" => r <= X"5b"; g <= X"38"; b <= X"00";
-			when X"A" => r <= X"d1"; g <= X"67"; b <= X"6d";
-			when X"B" => r <= X"4a"; g <= X"4a"; b <= X"4a";
-			when X"C" => r <= X"7b"; g <= X"7b"; b <= X"7b";
-			when X"D" => r <= X"9f"; g <= X"ef"; b <= X"93";
-			when X"E" => r <= X"6d"; g <= X"6a"; b <= X"ef";
-			when X"F" => r <= X"b2"; g <= X"b2"; b <= X"b2";
-			end case;
-		when "010" =>
-			case index is
-			when X"0" => r <= X"00"; g <= X"00"; b <= X"00";
-			when X"1" => r <= X"ff"; g <= X"ff"; b <= X"ff";
-			when X"2" => r <= X"68"; g <= X"37"; b <= X"2b";
-			when X"3" => r <= X"70"; g <= X"a4"; b <= X"b2";
-			when X"4" => r <= X"6f"; g <= X"3d"; b <= X"86";
-			when X"5" => r <= X"58"; g <= X"8d"; b <= X"43";
-			when X"6" => r <= X"35"; g <= X"28"; b <= X"79";
-			when X"7" => r <= X"b8"; g <= X"c7"; b <= X"6f";
-			when X"8" => r <= X"6f"; g <= X"4f"; b <= X"25";
-			when X"9" => r <= X"43"; g <= X"39"; b <= X"00";
-			when X"A" => r <= X"9a"; g <= X"67"; b <= X"59";
-			when X"B" => r <= X"44"; g <= X"44"; b <= X"44";
-			when X"C" => r <= X"6c"; g <= X"6c"; b <= X"6c";
-			when X"D" => r <= X"9a"; g <= X"d2"; b <= X"84";
-			when X"E" => r <= X"6c"; g <= X"5e"; b <= X"b5";
-			when X"F" => r <= X"95"; g <= X"95"; b <= X"95";
-			end case;
-		when "011" =>
-			case index is
-			when X"0" => r <= X"00"; g <= X"00"; b <= X"00";
-			when X"1" => r <= X"d5"; g <= X"d5"; b <= X"d5";
-			when X"2" => r <= X"72"; g <= X"35"; b <= X"2c";
-			when X"3" => r <= X"65"; g <= X"9f"; b <= X"a6";
-			when X"4" => r <= X"73"; g <= X"3a"; b <= X"91";
-			when X"5" => r <= X"56"; g <= X"8d"; b <= X"35";
-			when X"6" => r <= X"2e"; g <= X"23"; b <= X"7d";
-			when X"7" => r <= X"ae"; g <= X"b7"; b <= X"5e";
-			when X"8" => r <= X"77"; g <= X"4f"; b <= X"1e";
-			when X"9" => r <= X"4b"; g <= X"3c"; b <= X"00";
-			when X"A" => r <= X"9c"; g <= X"63"; b <= X"5a";
-			when X"B" => r <= X"47"; g <= X"47"; b <= X"47";
-			when X"C" => r <= X"6b"; g <= X"6b"; b <= X"6b";
-			when X"D" => r <= X"8f"; g <= X"c2"; b <= X"71";
-			when X"E" => r <= X"67"; g <= X"5d"; b <= X"b6";
-			when X"F" => r <= X"8f"; g <= X"8f"; b <= X"8f";
-			end case;
-		when "100" =>
-			case index is
-			when X"0" => r <= X"00"; g <= X"00"; b <= X"00";
-			when X"1" => r <= X"ff"; g <= X"ff"; b <= X"ff";
-			when X"2" => r <= X"7b"; g <= X"1f"; b <= X"32";
-			when X"3" => r <= X"86"; g <= X"df"; b <= X"cd";
-			when X"4" => r <= X"b3"; g <= X"58"; b <= X"c2";
-			when X"5" => r <= X"49"; g <= X"a6"; b <= X"4b";
-			when X"6" => r <= X"38"; g <= X"29"; b <= X"ad";
-			when X"7" => r <= X"c7"; g <= X"d5"; b <= X"55";
-			when X"8" => r <= X"b1"; g <= X"74"; b <= X"3a";
-			when X"9" => r <= X"53"; g <= X"3d"; b <= X"00";
-			when X"A" => r <= X"be"; g <= X"62"; b <= X"75";
-			when X"B" => r <= X"3d"; g <= X"3d"; b <= X"3d";
-			when X"C" => r <= X"80"; g <= X"80"; b <= X"80";
-			when X"D" => r <= X"8c"; g <= X"e8"; b <= X"8e";
-			when X"E" => r <= X"7b"; g <= X"6c"; b <= X"f0";
-			when X"F" => r <= X"c2"; g <= X"c2"; b <= X"c2";
-			end case;
-		when "101" =>
-			case index is
-			when X"0" => r <= X"00"; g <= X"00"; b <= X"00";
-			when X"1" => r <= X"ff"; g <= X"ff"; b <= X"ff";
-			when X"2" => r <= X"8d"; g <= X"30"; b <= X"43";
-			when X"3" => r <= X"66"; g <= X"c0"; b <= X"ad";
-			when X"4" => r <= X"90"; g <= X"35"; b <= X"9f";
-			when X"5" => r <= X"49"; g <= X"a6"; b <= X"4b";
-			when X"6" => r <= X"38"; g <= X"29"; b <= X"ad";
-			when X"7" => r <= X"c7"; g <= X"d5"; b <= X"55";
-			when X"8" => r <= X"8e"; g <= X"51"; b <= X"17";
-			when X"9" => r <= X"53"; g <= X"3d"; b <= X"00";
-			when X"A" => r <= X"be"; g <= X"62"; b <= X"75";
-			when X"B" => r <= X"4e"; g <= X"4e"; b <= X"4e";
-			when X"C" => r <= X"76"; g <= X"76"; b <= X"76";
-			when X"D" => r <= X"8c"; g <= X"e8"; b <= X"8e";
-			when X"E" => r <= X"71"; g <= X"62"; b <= X"e6";
-			when X"F" => r <= X"a3"; g <= X"a3"; b <= X"a3";
-			end case;
-		when "110" =>
-			case index is
-			when X"0" => r <= X"00"; g <= X"00"; b <= X"00";
-			when X"1" => r <= X"ff"; g <= X"ff"; b <= X"ff";
-			when X"2" => r <= X"8b"; g <= X"34"; b <= X"36";
-			when X"3" => r <= X"65"; g <= X"be"; b <= X"b9";
-			when X"4" => r <= X"8d"; g <= X"36"; b <= X"a2";
-			when X"5" => r <= X"4a"; g <= X"a6"; b <= X"46";
-			when X"6" => r <= X"2d"; g <= X"30"; b <= X"a8";
-			when X"7" => r <= X"d2"; g <= X"cf"; b <= X"57";
-			when X"8" => r <= X"8e"; g <= X"50"; b <= X"1b";
-			when X"9" => r <= X"54"; g <= X"3d"; b <= X"00";
-			when X"A" => r <= X"bc"; g <= X"65"; b <= X"68";
-			when X"B" => r <= X"4e"; g <= X"4e"; b <= X"4e";
-			when X"C" => r <= X"76"; g <= X"76"; b <= X"76";
-			when X"D" => r <= X"8d"; g <= X"e9"; b <= X"89";
-			when X"E" => r <= X"66"; g <= X"69"; b <= X"e1";
-			when X"F" => r <= X"a3"; g <= X"a3"; b <= X"a3";
-			end case;
-		when "111" =>
-			case index is
-			when X"0" => r <= X"00"; g <= X"00"; b <= X"00";
-			when X"1" => r <= X"ff"; g <= X"ff"; b <= X"ff";
-			when X"2" => r <= X"8b"; g <= X"3e"; b <= X"42";
-			when X"3" => r <= X"7c"; g <= X"d3"; b <= X"cd";
-			when X"4" => r <= X"97"; g <= X"46"; b <= X"a0";
-			when X"5" => r <= X"5c"; g <= X"b2"; b <= X"54";
-			when X"6" => r <= X"3c"; g <= X"39"; b <= X"a9";
-			when X"7" => r <= X"e3"; g <= X"e7"; b <= X"6e";
-			when X"8" => r <= X"94"; g <= X"57"; b <= X"31";
-			when X"9" => r <= X"59"; g <= X"3c"; b <= X"07";
-			when X"A" => r <= X"cd"; g <= X"77"; b <= X"7c";
-			when X"B" => r <= X"50"; g <= X"50"; b <= X"50";
-			when X"C" => r <= X"83"; g <= X"83"; b <= X"83";
-			when X"D" => r <= X"af"; g <= X"f8"; b <= X"a6";
-			when X"E" => r <= X"7f"; g <= X"7d"; b <= X"f4";
-			when X"F" => r <= X"ba"; g <= X"ba"; b <= X"ba";
-			end case;
-		end case;
+		for i in 0 to 127 loop
+			v(i) := BUILTIN(i);
+		end loop;
+		for i in 0 to 15 loop
+			v(128 + i) := BUILTIN(i);
+		end loop;
+		return v;
+	end function;
+
+	signal ram : ram_t := ram_init;
+	attribute ramstyle : string;
+	attribute ramstyle of ram : signal is "M9K, no_rw_check";
+	signal q : std_logic_vector(23 downto 0);
+begin
+	process(clk)
+	begin
+		if rising_edge(clk) then
+			if we = '1' then
+				ram(to_integer("1000" & windex)) <= wrgb;
+			end if;
+			q <= ram(to_integer(palette & index));
+		end if;
 	end process;
+
+	r <= unsigned(q(23 downto 16));
+	g <= unsigned(q(15 downto 8));
+	b <= unsigned(q(7 downto 0));
 end Behavioral;

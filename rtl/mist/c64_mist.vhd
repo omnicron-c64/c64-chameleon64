@@ -47,6 +47,16 @@ generic
 );
 port
 (
+	C64_KEYS      : in  std_logic_vector(63 downto 0) := (others => '1');
+	C64_RESTORE_N : in  std_logic := '1';
+	C64_FREEZE_N  : in  std_logic := '1'; -- external freeze button (cartridges)
+	C64_RESET_N   : in  std_logic := '1'; -- external reset button (C64 only)
+	DBG_REQ       : in  std_logic := '0';  -- USB debug bridge (toggle)
+	DBG_WE        : in  std_logic := '0';
+	DBG_ADDR      : in  std_logic_vector(31 downto 0) := (others => '0');
+	DBG_WDATA     : in  std_logic_vector(7 downto 0) := (others => '0');
+	DBG_RDATA     : out std_logic_vector(7 downto 0);
+	DBG_ACK       : out std_logic;
 	-- Clocks
    CLOCK_IN   : in    std_logic;
 
@@ -163,16 +173,16 @@ variable s: string(1 to DRIVE_N*47);
 begin
 	for i in 0 to DRIVE_N-1 loop
 		--P3Oab(cd,ef,gh)...
-		s(i*47+1 to i*47+47):="P3O"&character'val(i*2+97)&character'val(i*2+98)&",Drive "&character'val(i+48)&",Enable,Enable if mounted,Disable;";
+		s(i*47+1 to i*47+47):="P3O"&character'val(i*2+97)&character'val(i*2+98)&",Drive "&character'val(i+56)&",Enable,Enable if mounted,Disable;";
 	end loop;
 	return s;
 end function;
 
 function MT1541 return string is
-variable s: string(1 to DRIVE_N*24);
+variable s: string(1 to DRIVE_N*25);
 begin
 	for i in 0 to DRIVE_N-1 loop
-		s(i*24+1 to i*24+24):="S"&character'val(i+48)&"U,D64G64,Mount Disk "&character'val(i+48)&";";
+		s(i*25+1 to i*25+25):="S"&character'val(i+48)&"U,D64G64,Mount Drive "&character'val(i+56)&";";
 	end loop;
 	return s;
 end function;
@@ -180,19 +190,19 @@ end function;
 constant CONF_STR : string := 
 	"C64;;"&
 	MT1541&
-	"F2,CRTPRGTAPREU,Load;"& --2
-	"F3,ROM,Load;"& --3
-	"F4pIDX,IDX,Open;"& --2
+	"F2,CRTPRGTAPREU,Load PRG/CRT/TAP/REU;"& --2
+	"F3,ROM,Load C64/1541 ROM;"& --3
+	"F5,VPL,Load Palette (.vpl);"&
+	"F4pIDX,IDX,Open TAP index;"& --2
 	SEP&
 	"TH,Play/Stop TAP;"&
 	SEP&
 	"P1,Profiles;"&
-	"P2,Video & Audio;"&
-	"P3,System;"&
 	"P1I,PAL Breadbin,0x00002000,0xc000e014;"&
 	"P1I,NTSC Breadbin,0x0002004,0xc000e014;"&
 	"P1I,PAL C64C,0x80006010,0xc000e014;"&
 	"P1I,NTSC C64C,0x80006014,0xc000e014;"&
+	"P2,Video & Audio;"&
 	"P2O89,Scandoubler Fx,None,CRT 25%,CRT 50%,CRT 75%;"&
 	"P2O2,Video standard,PAL,NTSC;"&
 	"P2OUV,VIC-II variant,656x,856x,early 856x;"&
@@ -201,7 +211,7 @@ constant CONF_STR : string :=
 	"P2ODF,SID,6581 Mono,6581 Stereo,8580 Mono,8580 Stereo,Pseudo Stereo;"&
 	"P2O6,Audio filter,On,Off;"&
 	"P2OXZ,Palette,Colodore,Ultimate,Pepto-PAL,Vice,Vice6569R1,Vice6569R5,Vice8565R2,Lemon64;"&
-	"P2ONP,Midi,Off,Sequential Inc.,Passport/Sentech,DATEL/SIEL/JMS/C-LAB,Namesoft;"&
+	"P3,System;"&
 	"P3O3,Joysticks,Normal,Swapped;"&
 	"P3OST,Mouse,Off,Port 1,Port 2;"&
 	"P3OW,Mouse Type,1351,Neos;"&
@@ -209,8 +219,9 @@ constant CONF_STR : string :=
 	"P3OG,Disk Write,Enable,Disable;"&
 	"P3OQR,Userport,4-player IF,UART,UP9600;"&
 	"P3O4,CIA Model,6256,8521;"&
-	"P3OAB,Turbo,Off,Software Switchable,On;"&
+	"P3OAB,Turbo 2x,Off,Software ($D030/31),On;"&
 	"P3OKM,REU,Off,512K,1MB,2MB,4MB,8MB,16MB;"&
+	"P3Oi,Ultimate UCI,Off,On;"&
 	SEP&
 	"T1,Reset;"&
 	"T5,Reset & Detach Cartridge;"&
@@ -241,6 +252,7 @@ constant FILE_TAP  : std_logic_vector(7 downto 0) := x"82";
 constant FILE_IDX  : std_logic_vector(7 downto 0) := x"04";
 constant FILE_REU  : std_logic_vector(7 downto 0) := x"C2";
 constant FILE_ROM  : std_logic_vector(7 downto 0) := x"03";
+constant FILE_VPL  : std_logic_vector(7 downto 0) := x"05";
 
 component data_io 
 generic
@@ -315,6 +327,7 @@ component cartridge port
 	mem_write	: in  std_logic;									-- memory write active
 	mem_ce		: in  std_logic;
 	mem_ce_out  : out std_logic;
+	mem_write_ok : out std_logic;
 	IOE			: in  std_logic;									-- IOE signal &DE00
 	IOF			: in  std_logic;									-- IOF signal &DF00
 
@@ -414,6 +427,42 @@ end component progressbar;
 
 	signal phi: std_logic;
 	signal c1541_reset: std_logic;
+	signal c1541_reset_x: std_logic;
+	-- 1541 ROM in SDRAM
+	constant C1541_ROM_START : std_logic_vector(23 downto 0) := X"0F4000";
+	signal drv_cycle      : std_logic;
+	signal c64_slot       : std_logic;
+	signal cart_wr_ok     : std_logic;
+	signal dbg_req_s      : std_logic_vector(2 downto 0) := "000";
+	signal dbg_ack_r      : std_logic := '0';
+	signal dbg_busy       : std_logic := '0';
+	signal dbg_ce         : std_logic := '0';
+	signal dbg_res        : std_logic_vector(1 downto 0) := "00";
+	signal dbg_idle0_d    : std_logic := '0';
+	signal dbg_wr         : std_logic := '0';
+	signal dbg_a          : std_logic_vector(31 downto 0) := (others => '0');
+	signal dbg_wd         : std_logic_vector(7 downto 0) := (others => '0');
+	signal dbg_rd         : std_logic_vector(7 downto 0) := (others => '0');
+	signal dbg_snap_hi    : std_logic_vector(7 downto 0) := (others => '0');
+	signal dbg_cpu_addr   : unsigned(15 downto 0);
+	signal dbg_cpu_io     : unsigned(7 downto 0);
+	signal dbg_turbo      : std_logic_vector(1 downto 0) := "00"; -- USB turbo override
+	signal dbg_turbo_cnt  : unsigned(15 downto 0);
+	signal dbg_turbo_last : unsigned(15 downto 0) := (others => '0');
+	signal dbg_turbo_frm  : unsigned(15 downto 0) := (others => '0');
+	signal dbg_iec_hold   : std_logic;
+	signal dbg_turbo_en   : std_logic;
+	signal dbg_vs_d       : std_logic := '0';
+	signal turbo_sel_eff  : std_logic_vector(1 downto 0);
+	signal drv_mtr        : std_logic_vector(DRIVE_N-1 downto 0) := (others => '0');
+	signal drv_mtr_s      : std_logic_vector(1 downto 0) := "00";
+	signal drv_cycleD     : std_logic := '0';
+	signal drv_rom_a      : std_logic_vector(13 downto 0);
+	signal drv_a_s1, drv_a_s2, drv_a_coh, drv_fetch_a : std_logic_vector(13 downto 0) := (others => '0');
+	signal drv_data       : std_logic_vector(7 downto 0) := (others => '1');
+	signal drv_tgl        : std_logic := '0';
+	signal drv_tgl_s      : std_logic_vector(2 downto 0) := (others => '0');
+	signal drv_rom_q      : std_logic_vector(7 downto 0) := (others => '1');
 	signal idle0: std_logic;
 	signal idle: std_logic;
 	signal ces: std_logic_vector(3 downto 0);
@@ -537,6 +586,14 @@ end component progressbar;
 	signal st_scandoubler_fx   : std_logic_vector(1 downto 0); -- status(9 downto 8)
 	signal st_audio_filter_off : std_logic;                    -- status(6)
 	signal st_palette          : unsigned(2 downto 0);            -- status(35 downto 33)
+	signal st_uci              : std_logic;                       -- status(44)
+	signal uci_dout            : std_logic_vector(7 downto 0);
+	signal uci_oe              : std_logic;
+	signal vpl_download        : std_logic;
+	signal pal_sel             : unsigned(3 downto 0);
+	signal pal_we              : std_logic;
+	signal pal_idx             : unsigned(3 downto 0);
+	signal pal_rgb             : std_logic_vector(23 downto 0);
 	signal st_detach_cartdrige : std_logic;                    -- status(5)
 	signal st_cia_mode         : std_logic;                    -- status(4)
 	signal st_swap_joystick    : std_logic;                    -- status(3)
@@ -664,6 +721,7 @@ end component progressbar;
 	signal reset_n          : std_logic;
 	signal led_disks        : std_logic;
 	signal freeze_key  :   std_logic;
+	signal cart_freeze :   std_logic;
 	signal nmi         :  std_logic;
 	signal nmi_ack     :  std_logic;
 	signal erasing          : std_logic;
@@ -699,6 +757,7 @@ begin
 
 	-- 1541/tape activity led
 	LED <= not ioctl_download and not led_disks and cass_motor;
+	cart_freeze <= freeze_key or not C64_FREEZE_N;
 
 	-- use iec and the first set of idle cycles for mist access
 	mist_cycle <= '1' when ces = "1011" or idle0 = '1' else '0'; 
@@ -788,7 +847,8 @@ begin
 	st_vic_variant      <= status(31 downto 30);
 	st_mouse_port       <= status(29 downto 28);
 	st_user_port        <= status(27 downto 26);
-	st_midi             <= status(25 downto 23);
+	st_midi             <= "000"; -- MIDI removed
+	st_uci              <= status(44);
 	st_reu              <= status(22 downto 20);
 	st_tape_progress    <= status(19);
 	st_tape_sound       <= status(18);
@@ -803,7 +863,7 @@ begin
 	st_cia_mode         <= status(4);
 	st_swap_joystick    <= status(3);
 	st_ntsc             <= status(2);
-	st_normal_reset     <= status(1) or buttons(1);
+	st_normal_reset     <= status(1) or buttons(1) or not C64_RESET_N;
 	st_reset            <= status(0);
 
 	data_io_d: data_io
@@ -839,6 +899,7 @@ begin
 		mem_write => not ram_we,	
 		mem_ce => not ram_ce,
 		mem_ce_out => mem_ce,
+		mem_write_ok => cart_wr_ok,
 
 		clk32 => clk_c64,
 		reset => reset_n,
@@ -870,29 +931,40 @@ begin
 		IOF_ena => ioF_rom,
 		max_ram => max_ram,
 		ext_sid_cs => ext_sid_cs,
-		freeze_key => freeze_key,
+		freeze_key => cart_freeze,
 		nmi => nmi,
 		nmi_ack => nmi_ack
 	);
 
-	midi : entity work.c64_midi
-	port map (
-		clk32   => clk_c64,
-		reset   => not reset_n,
-		Mode    => st_midi,
-		E       => phi,
-		IOE     => IOE,
-		A       => c64_addr,
-		Din     => c64_data_out,
-		Dout    => midi_data,
-		OE      => midi_oe,
-		RnW     => c64_rnw,
-		nIRQ    => midi_irq_n,
-		nNMI    => midi_nmi_n,
+	-- MIDI removed: the Chameleon has no MIDI/UART pins to drive
+	midi_data  <= x"FF";
+	midi_oe    <= '0';
+	midi_irq_n <= '1';
+	midi_nmi_n <= '1';
+	midi_tx    <= '1';
 
-		RX      => midi_rx,
-		TX      => midi_tx
+	uci_pal : entity work.uci_palette
+	port map (
+		clk          => clk_c64,
+		reset        => not reset_n,
+		uci_enable   => st_uci,
+		phi          => phi,
+		iof          => IOF,
+		addr         => c64_addr,
+		rnw          => c64_rnw,
+		din          => c64_data_out,
+		dout         => uci_dout,
+		oe           => uci_oe,
+		vpl_download => vpl_download,
+		vpl_wr       => ioctl_wr,
+		vpl_data     => ioctl_data,
+		menu_palette => st_palette,
+		palette_sel  => pal_sel,
+		pal_we       => pal_we,
+		pal_idx      => pal_idx,
+		pal_rgb      => pal_rgb
 	);
+	vpl_download <= '1' when ioctl_download = '1' and ioctl_index = FILE_VPL else '0';
 
 	process(clk_c64)
 	begin
@@ -931,7 +1003,7 @@ begin
 					if ioctl_addr = 0 then
 						ioctl_load_addr <= C64_ROM_START;
 					end if;
-					if ioctl_addr(24 downto 14) = 0 then
+					if ioctl_addr(24 downto 15) = 0 then
 						ioctl_ram_wr <= '1';
 					end if;
 				end if;
@@ -1070,7 +1142,42 @@ begin
 		end if;
 	end process;
 
-	c1541rom_wr <= ioctl_wr when (ioctl_index = FILE_BOOT or ioctl_index = FILE_ROM) and (ioctl_addr(14) = '1') and (ioctl_download = '1') else '0';
+	c1541rom_wr <= '0'; -- 1541 ROM is loaded into SDRAM with the boot ROM
+
+	-- 1541 ROM fetch: address into clk_c64 (coherence check), SDRAM read in
+	-- drv_cycle slots, data back to clk32 via a toggle handshake.
+	process(clk_c64)
+	begin
+		if rising_edge(clk_c64) then
+			drv_a_s1 <= drv_rom_a;
+			drv_a_s2 <= drv_a_s1;
+			if drv_a_s1 = drv_a_s2 then
+				drv_a_coh <= drv_a_s2;
+			end if;
+			drv_cycleD <= drv_cycle;
+			if drv_cycle = '0' then
+				drv_fetch_a <= drv_a_coh;
+			end if;
+			if drv_cycle = '0' and drv_cycleD = '1' then
+				drv_data <= sdram_data_out(7 downto 0);
+				drv_tgl <= not drv_tgl;
+			end if;
+		end if;
+	end process;
+
+	process(clk32)
+	begin
+		if rising_edge(clk32) then
+			drv_tgl_s <= drv_tgl_s(1 downto 0) & drv_tgl;
+			if drv_tgl_s(2) /= drv_tgl_s(1) then
+				drv_rom_q <= drv_data;
+			end if;
+		end if;
+	end process;
+
+	-- keep the drive in reset until its ROM is in SDRAM
+	c1541_reset_x <= '1' when c1541_reset = '1' or rom_loaded = '0' or
+	                 (ioctl_download = '1' and (ioctl_index = FILE_BOOT or ioctl_index = FILE_ROM)) else '0';
 
 	-- UART_RX synchronizer
 	process(clk_c64)
@@ -1280,28 +1387,33 @@ begin
 	);
 
 	-- sdram
-	sdram_addr <= std_logic_vector(unsigned(C64_ROM_START) + c64_rom_addr) when mist_cycle = '0' and rom_ce = '0' else
+	sdram_addr <= std_logic_vector(unsigned(C1541_ROM_START) + unsigned(drv_fetch_a)) when drv_cycle = '1' else
+	              std_logic_vector(unsigned(C64_ROM_START) + c64_rom_addr) when mist_cycle = '0' and rom_ce = '0' else
 	              c64_addr_temp when mist_cycle='0' else
 	              reu_ram_addr when reu_cycle='1' and reu_ram_ce='1' else
 	              ioctl_ram_addr when prg_reg_update = '1' or ioctl_download = '1' or erasing = '1' else
+	              dbg_a(23 downto 0) when dbg_ce = '1' else
 	              tap_play_addr;
-	sdram_bs <= "10" when reu_ram_ce='1' and reu_cycle='1' else
+	sdram_bs <= "01" when drv_cycle = '1' else
+	            "10" when reu_ram_ce='1' and reu_cycle='1' else
 	            ioctl_bs when mist_cycle_wr = '1' and mist_cycle = '1' else
 	            "01";
-	sdram_data_in( 7 downto 0) <= c64_ram_dout when mist_cycle='0' else ioctl_ram_data;
+	sdram_data_in( 7 downto 0) <= c64_ram_dout when mist_cycle='0' else dbg_wd when dbg_ce = '1' else ioctl_ram_data;
 	sdram_data_in(15 downto 8) <= ioctl_ram_data when mist_cycle = '1' and mist_cycle_wr = '1' else reu_ram_do;
-	c64_data_in <= reu_dout when reu_oe = '1' else midi_data when midi_oe = '1' else cart_data_out when cart_data_oe = '1' else sdram_data_out(7 downto 0);
+	c64_data_in <= uci_dout when uci_oe = '1' else reu_dout when reu_oe = '1' else midi_data when midi_oe = '1' else cart_data_out when cart_data_oe = '1' else sdram_data_out(7 downto 0);
 	c64_ram_din <= sdram_data_out(7 downto 0);
 
 	reu_ram_di <= sdram_data_out(15 downto 8);
 
 	-- ram_we and rom_ce are active low
-	sdram_ce <= (mem_ce or not rom_ce) when mist_cycle='0' else  -- normal access to C64 RAM
+	sdram_ce <= '1' when drv_cycle = '1' else                     -- 1541 ROM fetch
+	            ((mem_ce or not rom_ce) and c64_slot) when mist_cycle='0' else  -- C64 RAM/ROM/cart, own slots only
 	             '1' when reu_ram_ce='1' and reu_cycle='1' else  -- REU access to REU RAM
-	             mist_cycle_wr or tap_mem_ce;                    -- IO-Controller/TAP player access
-	sdram_we <= not ram_we when mist_cycle = '0' else
+	             mist_cycle_wr or tap_mem_ce or dbg_ce;          -- IO-Controller/TAP player/USB debug access
+	sdram_we <= '0' when drv_cycle = '1' else
+	            (not ram_we and cart_wr_ok) when mist_cycle = '0' else
 	            reu_ram_we when reu_ram_ce = '1' and reu_cycle = '1' else
-	            mist_cycle_wr;
+	            mist_cycle_wr or (dbg_ce and dbg_wr);
 
 	SDRAM_CKE <= '1';
 
@@ -1366,7 +1478,7 @@ begin
 	port map(
 		clk32 => clk_c64,
 		reset_n => reset_n,
-		turbo_sel => st_turbo,
+		turbo_sel => turbo_sel_eff,
 		kbd_clk => not ps2_clk,
 		kbd_dat => ps2_dat,
 
@@ -1398,7 +1510,7 @@ begin
 		UMAXromH => UMAXromH,
 		CPU_hasbus => CPU_hasbus,		
 		ioE_rom => ioE_rom or midi_oe,
-		ioF_rom => ioF_rom or reu_oe,
+		ioF_rom => ioF_rom or reu_oe or uci_oe,
 		ext_sid_cs => ext_sid_cs,
 		max_ram => max_ram,
 		irq_n => reu_irq_n and midi_irq_n,
@@ -1425,7 +1537,20 @@ begin
 		still => open,
 		idle0 => idle0, -- first set of idle cycles
 		idle => idle, -- second set of idle cycles (for refresh)
-		palette      => st_palette,
+		drvCycle => drv_cycle,
+		c64Slot  => c64_slot,
+		dbgCpuAddr => dbg_cpu_addr,
+		dbgCpuIo => dbg_cpu_io,
+		dbgTurboCnt => dbg_turbo_cnt,
+		dbgIecHold => dbg_iec_hold,
+		dbgTurboEn => dbg_turbo_en,
+		turboBlock => drv_mtr_s(1),
+		ext_keys => C64_KEYS,
+		ext_restore_n => C64_RESTORE_N,
+		palette      => pal_sel,
+		pal_we       => pal_we,
+		pal_idx      => pal_idx,
+		pal_rgb      => pal_rgb,
 		audio_data_l => audio_data_l,
 		audio_data_r => audio_data_r,
 		sid_filter   => (not st_audio_filter_off) & (not st_audio_filter_off),
@@ -1663,6 +1788,14 @@ begin
 		signal sd_cnts            : sd_cnt_t;
 		type sd_buff_din_t is array (0 to DRIVE_N-1) of std_logic_vector(7 downto 0);
 		signal sd_buff_dins       : sd_buff_din_t;
+		-- sector splitter (drive 0 <-> user_io)
+		signal drv_rd, drv_wr, drv_ack : std_logic := '0';
+		signal drv_lba            : std_logic_vector(31 downto 0);
+		signal drv_cnt            : std_logic_vector(7 downto 0);
+		signal drv_buff_addr      : std_logic_vector(16 downto 0);
+		signal spl_busy, spl_wr, spl_up_rd, spl_up_wr, spl_ack_d : std_logic := '0';
+		signal spl_idx, spl_total : unsigned(7 downto 0) := (others => '0');
+		signal spl_base           : unsigned(31 downto 0) := (others => '0');
 		signal led_disk           : std_logic_vector(DRIVE_N-1 downto 0);
 	begin
 
@@ -1723,7 +1856,7 @@ begin
 	port map
 	(
 		clk32 => clk32,
-		reset => c1541_reset,
+		reset => c1541_reset_x,
 		enable => st_drive(i),
 		ds => std_logic_vector(to_unsigned(i,2)),
 
@@ -1731,6 +1864,8 @@ begin
 		c1541rom_addr => ioctl_addr(13 downto 0),
 		c1541rom_data => ioctl_data,
 		c1541rom_wr => c1541rom_wr,
+		c1541rom_ext_addr => drv_rom_a,   -- DRIVE_N = 1 only
+		c1541rom_ext_data => drv_rom_q,
 
 		disk_change => sd_change(i),
 		disk_mount => sd_mount,
@@ -1746,22 +1881,160 @@ begin
 		iec_data_o => c1541_iec_data_o(i),
 		iec_clk_o  => c1541_iec_clk_o(i),
 
-		sd_lba => sd_lbas(i),
-		sd_cnt => sd_cnts(i),
-		sd_rd  => sd_rd(i),
-		sd_wr  => sd_wr(i),
-		sd_ack => sd_ack_x(i),
-		sd_buff_addr => sd_buff_addr,
+		sd_lba => drv_lba,      -- via sector splitter (DRIVE_N = 1)
+		sd_cnt => drv_cnt,
+		sd_rd  => drv_rd,
+		sd_wr  => drv_wr,
+		sd_ack => drv_ack,
+		sd_buff_addr => drv_buff_addr,
 		sd_buff_dout => sd_buff_dout,
 		sd_buff_din  => sd_buff_dins(i),
 		sd_buff_wr   => sd_buff_wr,
 
+		dbg_mtr => drv_mtr(i),
 		led => led_disk(i)
 	);
 	end generate;
+
+	-- Sector splitter: one 512-byte block per controller transfer.
+	sd_lbas(0) <= std_logic_vector(spl_base + resize(spl_idx, 32));
+	sd_cnts(0) <= x"01";
+	sd_rd(0)   <= spl_up_rd;
+	sd_wr(0)   <= spl_up_wr;
+	drv_buff_addr <= std_logic_vector(unsigned(sd_buff_addr) + shift_left(resize(spl_idx, 17), 9));
+
+	process(clk32)
+	begin
+		if rising_edge(clk32) then
+			spl_ack_d <= sd_ack_x(0);
+			if spl_busy = '0' then
+				drv_ack <= '0';
+				if drv_rd = '1' or drv_wr = '1' then
+					spl_busy <= '1';
+					spl_wr   <= drv_wr and not drv_rd;
+					spl_base <= unsigned(drv_lba);
+					spl_idx  <= (others => '0');
+					if unsigned(drv_cnt) = 0 then
+						spl_total <= to_unsigned(1, 8);
+					else
+						spl_total <= unsigned(drv_cnt);
+					end if;
+					spl_up_rd <= drv_rd;
+					spl_up_wr <= drv_wr and not drv_rd;
+				end if;
+			else
+				if sd_ack_x(0) = '1' then
+					spl_up_rd <= '0';
+					spl_up_wr <= '0';
+					drv_ack   <= '1';
+				end if;
+				if spl_ack_d = '1' and sd_ack_x(0) = '0' then
+					if spl_idx + 1 < spl_total then
+						spl_idx   <= spl_idx + 1;
+						spl_up_rd <= not spl_wr;
+						spl_up_wr <= spl_wr;
+					else
+						spl_busy <= '0';
+						drv_ack  <= '0';
+					end if;
+				end if;
+			end if;
+		end if;
+	end process;
 	end block b_c1541;
 
-	-- TAP playback controller	
+	-- USB debug bridge (chameleon_usb in the Chameleon top, clk_100 -> clk_c64).
+	-- A(30)=0: SDRAM byte A(23:0) in the menu-CPU slot (C64 RAM = $000000-$00FFFF).
+	-- A(30)=1: debug window - byte 2 = CPU $01 port, byte 3 = cart_attached/EXROM/GAME,
+	--          other even/odd pairs = live CPU address lo/hi.
+	process(clk_c64)
+	begin
+		if rising_edge(clk_c64) then
+			dbg_req_s <= dbg_req_s(1 downto 0) & DBG_REQ;
+			dbg_idle0_d <= idle0;
+			dbg_res <= dbg_res(0) & '0';
+			if dbg_busy = '0' then
+				if dbg_req_s(2) /= dbg_ack_r then
+					dbg_a  <= DBG_ADDR;
+					dbg_wr <= DBG_WE;
+					dbg_wd <= DBG_WDATA;
+					if DBG_ADDR(30) = '1' then
+						if DBG_WE = '1' then
+							if DBG_ADDR(7 downto 0) = x"10" then
+								dbg_turbo <= DBG_WDATA(1 downto 0);
+							end if;
+						elsif DBG_ADDR(7 downto 0) = x"04" then
+							dbg_rd <= std_logic_vector(dbg_turbo_frm(7 downto 0));
+						elsif DBG_ADDR(7 downto 0) = x"05" then
+							dbg_rd <= std_logic_vector(dbg_turbo_frm(15 downto 8));
+						elsif DBG_ADDR(7 downto 0) = x"06" then
+							dbg_rd <= dbg_iec_hold & dbg_turbo_en & "0000" & turbo_sel_eff;
+						elsif DBG_ADDR(7 downto 0) = x"10" then
+							dbg_rd <= "000000" & dbg_turbo;
+						elsif DBG_ADDR(7 downto 0) = x"02" then
+							dbg_rd <= std_logic_vector(dbg_cpu_io);
+						elsif DBG_ADDR(7 downto 0) = x"03" then
+							dbg_rd <= cart_attached & exrom & game & "00000";
+						elsif DBG_ADDR(0) = '0' then
+							dbg_rd      <= std_logic_vector(dbg_cpu_addr(7 downto 0));
+							dbg_snap_hi <= std_logic_vector(dbg_cpu_addr(15 downto 8));
+						else
+							dbg_rd <= dbg_snap_hi;
+						end if;
+						dbg_ack_r <= not dbg_ack_r;
+					else
+						dbg_busy <= '1';
+					end if;
+				end if;
+			else
+				-- same pattern as the TAP reader, but only in the menu-CPU (idle0) slot
+				if dbg_ce = '0' and dbg_res = "00" and idle0 = '0' and dbg_idle0_d = '1' and
+				   ioctl_download = '0' and erasing = '0' and prg_reg_update = '0' and tap_mem_ce = '0' then
+					dbg_ce <= '1';
+				end if;
+				if dbg_ce = '1' and dbg_res = "00" and idle0 = '1' and dbg_idle0_d = '1' then
+					dbg_res(0) <= '1';
+				end if;
+				if dbg_res(0) = '1' then
+					dbg_ce <= '0';
+				end if;
+				if dbg_res(1) = '1' then
+					dbg_rd    <= sdram_data_out(7 downto 0);
+					dbg_busy  <= '0';
+					dbg_ack_r <= not dbg_ack_r;
+				end if;
+			end if;
+		end if;
+	end process;
+	turbo_sel_eff <= st_turbo when dbg_turbo = "00" else
+	                 "00"     when dbg_turbo = "01" else
+	                 "10"     when dbg_turbo = "10" else
+	                 "01";
+
+	-- drive motor (clk32 domain) -> clk_c64: keeps the C64 at 1 MHz while loading
+	process(clk_c64)
+	begin
+		if rising_edge(clk_c64) then
+			drv_mtr_s <= drv_mtr_s(0) & (drv_mtr(0));
+		end if;
+	end process;
+
+	-- turbo cycles per video frame
+	process(clk_c64)
+	begin
+		if rising_edge(clk_c64) then
+			dbg_vs_d <= vsync;
+			if vsync = '1' and dbg_vs_d = '0' then
+				dbg_turbo_frm  <= dbg_turbo_cnt - dbg_turbo_last;
+				dbg_turbo_last <= dbg_turbo_cnt;
+			end if;
+		end if;
+	end process;
+
+	DBG_RDATA <= dbg_rd;
+	DBG_ACK   <= dbg_ack_r;
+
+	-- TAP playback controller
 	process(clk_c64, reset_n)
 	begin
 		if reset_n = '0' then
@@ -1783,7 +2056,7 @@ begin
 
 			mist_cycle_rD <= mist_cycle;
 			tap_wrreq <= '0';
-			if mist_cycle = '0' and mist_cycle_rD = '1' and
+			if mist_cycle = '0' and mist_cycle_rD = '1' and dbg_busy = '0' and
 			  ioctl_download = '0' and tap_play_addr /= tap_last_addr and tap_wrfull = '0' then
 				tap_mem_ce <= '1';
 			end if;

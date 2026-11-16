@@ -58,6 +58,14 @@ entity fpga64_sid_iec is
 
 		idle0       : out std_logic;
 		idle        : out std_logic;
+		drvCycle    : out std_logic; -- SDRAM slots for the 1541 ROM fetch
+		c64Slot     : out std_logic; -- SDRAM slots the C64 side (CPU/VIC/cartridge) may use
+		dbgCpuAddr  : out unsigned(15 downto 0); -- USB debug: CPU address bus
+		dbgCpuIo    : out unsigned(7 downto 0);  -- USB debug: 6510 port ($01)
+		dbgTurboCnt : out unsigned(15 downto 0); -- USB debug: free-running count of early (turbo) CPU cycles
+		dbgIecHold  : out std_logic;             -- USB debug: CIA2 1 MHz hold active
+		dbgTurboEn  : out std_logic;             -- USB debug: turbo requested (menu/$D030/$D031)
+		turboBlock  : in  std_logic := '0';      -- drive busy (motor on): keep 1 MHz
 
 		-- VGA/SCART interface
 		vic_variant : in  std_logic_vector(1 downto 0);
@@ -86,6 +94,9 @@ entity fpga64_sid_iec is
 		irq_n       : in  std_logic;
 		nmi_n       : in  std_logic;
 		nmi_ack     : out std_logic;
+		-- external C64 keyboard matrix (Chameleon on a C64): low = pressed, index row*8+col
+		ext_keys      : in  std_logic_vector(63 downto 0) := (others => '1');
+		ext_restore_n : in  std_logic := '1';
 		dma_n       : in  std_logic := '1';
 		ba          : out std_logic;
 		romL        : out std_logic;        -- cart signals LCA
@@ -110,7 +121,10 @@ entity fpga64_sid_iec is
 		serioclk    : out std_logic;
 		ces         : out std_logic_vector(3 downto 0);
 
-		palette     : in  unsigned(2 downto 0);
+		palette     : in  unsigned(3 downto 0);
+		pal_we      : in  std_logic := '0';
+		pal_idx     : in  unsigned(3 downto 0) := (others => '0');
+		pal_rgb     : in  std_logic_vector(23 downto 0) := (others => '0');
 		--Connector to the SID
 		SIDclk      : buffer std_logic;
 		still       : out unsigned(15 downto 0);
@@ -199,6 +213,15 @@ architecture rtl of fpga64_sid_iec is
 	signal turbo_reg_en: std_logic;
 	signal turbo_dis: std_logic;
 	signal turbo: std_logic;
+	signal turbo_ok: std_logic;   -- pending CPU cycle may run early in the CPU4-7 slot
+	signal turbo_slot: std_logic; -- CPU4-6 SDRAM access is for the early CPU cycle
+	signal iec_hold: unsigned(10 downto 0) := (others => '0'); -- 1 MHz hold after CIA2 access (serial bus)
+	signal turbo_cnt: unsigned(15 downto 0) := (others => '0');
+	signal turbo_after: std_logic := '0'; -- an early turbo cycle ran in this microsecond
+	signal io_next: std_logic;               -- the CPU's pending access is in the I/O area
+	signal turbo_stall: std_logic;           -- defer that I/O access to the next microsecond
+	signal iec_lines_d: std_logic_vector(4 downto 0) := (others => '1');
+	signal iec_evt: std_logic := '0';
 
 	signal enableCpu: std_logic;
 	signal enableVic : std_logic;
@@ -303,6 +326,10 @@ architecture rtl of fpga64_sid_iec is
 	signal ntscMode : std_logic;
 	signal ntscModeInvert : std_logic := '0' ;
 	signal restore_key : std_logic;
+	signal restore_key_ps2 : std_logic;
+	signal kbd_pai, kbd_pbi : std_logic_vector(7 downto 0);
+	signal ext_pa, ext_pb   : std_logic_vector(7 downto 0);
+	signal ext_keys_r      : std_logic_vector(63 downto 0) := (others => '1');
 
 	signal cd4066_sigA  : std_logic_vector(7 downto 0);
 	signal cd4066_sigB  : std_logic_vector(7 downto 0);
@@ -363,14 +390,52 @@ begin
 -- -----------------------------------------------------------------------
 	ba <= baVic;
 
-	idle0 <= '1' when
+	-- IDLE0-3 and CPU0-3 now fetch the 1541 ROM from SDRAM (Chameleon build);
+	-- the IO controller keeps CPU8-B (plus the IEC slot).
+	-- 3 of the 4 clocks only: the SDRAM controller starts an access on a rising
+	-- ce, so the slot that follows (CPU4-6 turbo) needs a low clock in between.
+	drvCycle <= '1' when
 	  (sysCycle = CYCLE_IDLE0) or (sysCycle = CYCLE_IDLE1) or
-	  (sysCycle = CYCLE_IDLE2) or (sysCycle = CYCLE_IDLE3) or
+	  (sysCycle = CYCLE_IDLE2) or
 	  (sysCycle = CYCLE_CPU0) or (sysCycle = CYCLE_CPU1) or
-	  (sysCycle = CYCLE_CPU2) or (sysCycle = CYCLE_CPU3) or
+	  (sysCycle = CYCLE_CPU2) else '0';
+
+	idle0 <= '1' when
 	  (sysCycle = CYCLE_CPU8) or (sysCycle = CYCLE_CPU9) or
 	  (sysCycle = CYCLE_CPUA) or (sysCycle = CYCLE_CPUB) 
 	  else '0';
+	dbgCpuAddr <= cpuAddr;
+	dbgCpuIo <= cpuIO;
+	dbgIecHold <= '1' when iec_hold /= 0 else '0';
+
+	-- any change on the serial bus (ATN/CLK/DATA out, CLK/DATA in) re-arms the 1 MHz hold
+	process(clk32)
+	begin
+		if rising_edge(clk32) then
+			iec_lines_d <= cia2_pao(5 downto 3) & iec_clk_i & iec_data_i;
+			if iec_lines_d /= (cia2_pao(5 downto 3) & iec_clk_i & iec_data_i) then
+				iec_evt <= '1';
+			elsif sysCycle = CYCLE_CPUE then
+				iec_evt <= '0';
+			end if;
+		end if;
+	end process;
+	dbgTurboEn <= turbo_en_sync;
+	process(clk32)
+	begin
+		if rising_edge(clk32) then
+			if sysCycle = CYCLE_CPU6 and turbo_en_sync = '1' and turbo_ok = '1' then
+				turbo_cnt <= turbo_cnt + 1;
+			end if;
+		end if;
+	end process;
+	dbgTurboCnt <= turbo_cnt;
+
+	c64Slot <= '1' when
+	  (sysCycle = CYCLE_VIC0) or (sysCycle = CYCLE_VIC1) or (sysCycle = CYCLE_VIC2) or
+	  (sysCycle = CYCLE_CPUC) or (sysCycle = CYCLE_CPUD) or (sysCycle = CYCLE_CPUE) or
+	  turbo_slot = '1' else '0';
+
 	idle <= '1' when
 	  (sysCycle = CYCLE_IDLE4) or (sysCycle = CYCLE_IDLE5) or
 	  (sysCycle = CYCLE_IDLE6) or (sysCycle = CYCLE_IDLE7) else '0';
@@ -431,16 +496,54 @@ begin
 		end if;
 	end process;
 
-	cpuHasBus <= '1' when turbo = '1' or
+	cpuHasBus <= '0' when turbo_stall = '1' else '1' when
 	                      (dma_n = '0' and phi0_cpu = '1' and aecVic = '1') or -- dma access counts as CPU access in this context
 	                      (aecLoc = '1' and (baLoc = '1' or cpuWe = '1')) else '0';
 
 	turbo_reg_en <= '1' when turbo_sel = "01" else '0';
 
-	turbo_en <= '1' when (turbo_sel = "10" and border = '1') or
+	turbo_en <= '1' when (turbo_sel = "10") or
 	                     (turbo_sel = "01" and turbo_switch(0) = '1') else
 	            '0';
 	turbo <= '1' when turbo_en_sync = '1' and turbo_dis = '0' else '0';
+	-- only plain RAM/ROM cycles run early; any I/O chip, colour RAM, cartridge I/O,
+	-- DMA or VIC bus steal keeps the cycle at normal 1 MHz timing
+	-- any CIA2 ($DDxx, serial bus) access holds turbo off for ~2 ms so the KERNAL
+	-- and fast loaders keep their 1 MHz IEC timing
+	process(clk32)
+	begin
+		if rising_edge(clk32) then
+			if sysCycle = CYCLE_CPUE then
+				if iec_evt = '1' or turboBlock = '1' then
+					iec_hold <= (others => '1');
+				elsif iec_hold /= 0 then
+					iec_hold <= iec_hold - 1;
+				end if;
+			end if;
+		end if;
+	end process;
+
+	turbo_ok <= '1' when dma_n = '1' and baLoc = '1' and aecLoc = '1' and iec_hold = 0 and
+	                     cs_color = '0' and cs_vic = '0' and cs_cia1 = '0' and cs_cia2 = '0' and
+	                     cs_sid = '0' and cs_ioE = '0' and cs_ioF = '0' else '0';
+	-- I/O visible at $Dxxx: Ultimax, or CHAREN=1 with LORAM/HIRAM not both 0
+	io_next <= '1' when busAddr(15 downto 12) = X"D" and
+	                    ((exrom = '1' and game = '0') or (cpuIO(2) = '1' and cpuIO(1 downto 0) /= "00")) else '0';
+	turbo_stall <= turbo_after and io_next;
+
+	process(clk32)
+	begin
+		if rising_edge(clk32) then
+			if sysCycle = CYCLE_CPU6 and turbo_en_sync = '1' and turbo_ok = '1' then
+				turbo_after <= '1';
+			elsif sysCycle = CYCLE_CPUF then
+				turbo_after <= '0';
+			end if;
+		end if;
+	end process;
+
+	turbo_slot <= '1' when turbo_en_sync = '1' and turbo_ok = '1' and
+	                       (sysCycle = CYCLE_CPU4 or sysCycle = CYCLE_CPU5 or sysCycle = CYCLE_CPU6) else '0';
 
 	process(clk32)
 	begin
@@ -453,13 +556,16 @@ begin
 			case sysCycle is
 			when CYCLE_VIC2 =>
 				enableVic <= '1';
-				if turbo = '1' then
+			when CYCLE_CPU6 =>
+				if turbo_en_sync = '1' and turbo_ok = '1' then
 					enableCpu <= '1';
 				end if;
 				turbo_dis <= '0';
 			when CYCLE_CPUE =>
 				enableVic <= '1';
-				enableCpu <= '1';
+				if turbo_stall = '0' then
+					enableCpu <= '1';
+				end if;
 				turbo_en_sync <= turbo_en;
 				if dma_n = '0' or cs_color = '1' or cs_vic = '1' or cs_cia1 = '1' or cs_cia2 = '1' or cs_sid = '1' or cs_ioE = '1' or cs_ioF = '1' then
 					turbo_dis <= '1'; -- stretch the CPU clock when a peripheral is selected
@@ -485,7 +591,11 @@ begin
 
 	c64colors: entity work.fpga64_rgbcolor
 		port map (
+			clk => clk32,
 			palette => palette,
+			we => pal_we,
+			windex => pal_idx,
+			wrgb => pal_rgb,
 			index => vicColorIndex,
 			r => r,
 			g => g,
@@ -871,14 +981,14 @@ div1m: process(clk32)          -- this process divides 32 MHz to 1MHz (ce pulse 
 			ctrl2 => (not ctrl2(4 downto 0)),
 			pai => unsigned(cia1_pao),
 			pbi => unsigned(cia1_pbo),
-			std_logic_vector(pao) => cia1_pai,
-			std_logic_vector(pbo) => cia1_pbi,
+			std_logic_vector(pao) => kbd_pai,
+			std_logic_vector(pbo) => kbd_pbi,
 
 			videoKey => videoKey,
 			traceKey => open,
 			trace2Key => trace2Key,
 			reset_key => reset_key,
-			restore_key => restore_key,
+			restore_key => restore_key_ps2,
 			tapPlayStopKey => tap_playstop_key,
 			disk_num => disk_num,
 
@@ -925,12 +1035,14 @@ div1m: process(clk32)          -- this process divides 32 MHz to 1MHz (ce pulse 
 	ramAddr <= systemAddr;
 	ramWe <= '0' when sysCycle = CYCLE_IEC2 or sysCycle = CYCLE_IEC3 else not systemWe;
 	ramCE <= '0' when (sysCycle = CYCLE_VIC0 or sysCycle = CYCLE_VIC1 or sysCycle = CYCLE_VIC2 or
-	                  sysCycle = CYCLE_CPUC or sysCycle = CYCLE_CPUD or sysCycle = CYCLE_CPUE) and
+	                  sysCycle = CYCLE_CPUC or sysCycle = CYCLE_CPUD or sysCycle = CYCLE_CPUE or
+	                  turbo_slot = '1') and
 	                  cs_ram = '1' else '1';
 
 	romAddr <= "00" & busAddr(14) & busAddr(12 downto 0);
 	romCE <= '0' when (sysCycle = CYCLE_VIC0 or sysCycle = CYCLE_VIC1 or sysCycle = CYCLE_VIC2 or
-	                  sysCycle = CYCLE_CPUC or sysCycle = CYCLE_CPUD or sysCycle = CYCLE_CPUE) and
+	                  sysCycle = CYCLE_CPUC or sysCycle = CYCLE_CPUD or sysCycle = CYCLE_CPUE or
+	                  turbo_slot = '1') and
 	                  cs_rom = '1' else '1';
 
 	process(clk32)
@@ -1022,6 +1134,35 @@ div1m: process(clk32)          -- this process divides 32 MHz to 1MHz (ce pulse 
 	irqLoc <= irq_cia1 and irq_vic and irq_n; 
 	nmiLoc <= irq_cia2 and nmi_n;
 	freeze_key <= restore_key;
+
+	-- External C64 keyboard: scan the real matrix against CIA1 like the C64 does.
+	restore_key <= restore_key_ps2 or not ext_restore_n;
+	process(clk32)
+	begin
+		if rising_edge(clk32) then
+			ext_keys_r <= ext_keys;
+		end if;
+	end process;
+
+	process(ext_keys_r, cia1_pao, cia1_pbo)
+		variable pa, pb : std_logic_vector(7 downto 0);
+	begin
+		pa := (others => '1');
+		pb := (others => '1');
+		for r in 0 to 7 loop
+			for c in 0 to 7 loop
+				if ext_keys_r(r*8 + c) = '0' then
+					if cia1_pao(c) = '0' then pb(r) := '0'; end if;
+					if cia1_pbo(r) = '0' then pa(c) := '0'; end if;
+				end if;
+			end loop;
+		end loop;
+		ext_pa <= pa;
+		ext_pb <= pb;
+	end process;
+
+	cia1_pai <= kbd_pai and ext_pa;
+	cia1_pbi <= kbd_pbi and ext_pb;
 
 -- -----------------------------------------------------------------------
 -- Dummy silence audio output

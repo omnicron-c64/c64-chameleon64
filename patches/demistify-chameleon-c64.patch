@@ -1,0 +1,122 @@
+From 4f8daa95d3d305ba044e81ce050d4d48240f9782 Mon Sep 17 00:00:00 2001
+From: omnicron-c64 <omnicron-c64@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 22:20:09 -0700
+Subject: [PATCH] Firmware: SD protocol 0x8X (sector splitter), MiST 'I' preset
+ items
+
+---
+ firmware/diskimg.c |  6 +++--
+ firmware/main.c    | 66 ++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 70 insertions(+), 2 deletions(-)
+
+diff --git a/firmware/diskimg.c b/firmware/diskimg.c
+index d12dac6..225a099 100644
+--- a/firmware/diskimg.c
++++ b/firmware/diskimg.c
+@@ -19,7 +19,9 @@ int user_io_sd_get_status(uint32_t *lba, uint32_t *drive_index) {
+ 	*drive_index = 0;
+ 	spi_uio_cmd_cont(UIO_GET_SDSTAT);
+ 	c = SPI(0xff);
+-	if ((c & 0xf0) == 0x60) *drive_index = (SPI(0xff)) & 0x03;
++	/* 0x6X and 0x8X status formats carry a drive byte; 0x8X adds a block count
++	   after the LBA, which is ignored here (one block per transfer). */
++	if ((c & 0xf0) == 0x60 || (c & 0xf0) == 0x80) *drive_index = (SPI(0xff)) & 0x03;
+ 	s = SPI(0xff);
+ 	s = (s<<8) | (SPI(0xff));
+ 	s = (s<<8) | (SPI(0xff));
+@@ -76,7 +78,7 @@ void diskimg_poll()
+ 
+ 	// valid sd commands start with "5x" (old API), or "6x" (new API)
+ 	// to avoid problems with cores that don't implement this command
+-	if((c & 0xf0) == 0x50 || (c & 0xf0) == 0x60) {
++	if((c & 0xf0) == 0x50 || (c & 0xf0) == 0x60 || (c & 0xf0) == 0x80) {
+ 
+ #ifdef CONFIG_DISKIMG_SDCARD_CSD
+ 		// check if core requests configuration
+diff --git a/firmware/main.c b/firmware/main.c
+index af34cdf..91926b9 100644
+--- a/firmware/main.c
++++ b/firmware/main.c
+@@ -260,6 +260,64 @@ static void fileselector(int row)
+ 
+ #endif
+ 
++/* MiST 'I' preset items: "Pn I,<label>,<value>,<mask>" */
++static unsigned int preset_hex()
++{
++	unsigned int v=0;
++	int c=configstring_next();
++	while(c==' ')
++		c=configstring_next();
++	if(c=='0')
++	{
++		c=configstring_next();
++		if(c=='x' || c=='X')
++			c=configstring_next();
++	}
++	while(1)
++	{
++		int d;
++		if(c>='0' && c<='9') d=c-'0';
++		else if(c>='a' && c<='f') d=c-'a'+10;
++		else if(c>='A' && c<='F') d=c-'A'+10;
++		else break;
++		v=(v<<4)|d;
++		c=configstring_next();
++	}
++	return(v);
++}
++
++static void preset(int row)
++{
++	unsigned int i,value,mask;
++	int c,ok=0;
++	configstring_begin();
++	for(i=0;i<=menu[row].u.file.cfgidx;++i)
++		configstring_nextfield();
++	/* Expect "P<digit>I," - refuse anything else */
++	if(configstring_next()=='P')
++	{
++		configstring_next();
++		if(configstring_next()=='I' && configstring_next()==',')
++		{
++			do c=configstring_next(); while(c && c!=',' && c!=';');	/* label */
++			if(c==',')
++			{
++				value=preset_hex();
++				mask=preset_hex();
++				ok=1;
++			}
++		}
++	}
++	configstring_end();
++	if(ok)
++	{
++		statusword=(statusword&~mask)|(value&mask);
++		sendstatus();
++	}
++	buildmenu(0);
++	Menu_Draw(row);
++}
++
+ static void submenu(int row)
+ {
+ 	menupage=menu[row].u.menu.page;
+@@ -609,6 +667,14 @@ void parseconf(int selpage,struct menu_entry *menu,unsigned int first,unsigned i
+ 						}
+ 						nextline=1;
+ 						break;
++					case 'I': /* Preset: label, value, mask */
++						configstring_next(); /* comma */
++						configstring_copytocomma(menu[line].label,LINELENGTH,1);
++						menu[line].u.file.cfgidx=configidx;
++						menu[line].action=MENU_ACTION(&preset);
++						c=configstring_nextfield();
++						nextline=1;
++						break;
+ 					default:
+ 						c=configstring_nextfield();
+ 						break;
+-- 
+2.47.3
+

@@ -212,6 +212,7 @@ architecture rtl of video_vicii_656x is
 	signal myWr_c : std_logic;
 	signal myRd : std_logic;
 	signal turbo_reg: unsigned(1 downto 0);
+	signal u64_speed: unsigned(3 downto 0);
 
 begin
 -- -----------------------------------------------------------------------
@@ -1531,6 +1532,7 @@ writeRegisters: process(clk)
 				spriteColors(6) <= (others => '0');
 				spriteColors(7) <= (others => '0');
 				turbo_reg <= "00";
+				u64_speed <= "0000";
 			else
 
 				if (myWr_phi1 = '1' and (rasterX(1 downto 0) = "00" and enaPixel = '0' and variant = "01")) then
@@ -1651,6 +1653,13 @@ writeRegisters: process(clk)
 						MX(6)(8) <= di_r(6);
 						MX(7)(8) <= di_r(7);
 					when "110000" => turbo_reg <= di_r(1 downto 0);
+					when "110001" =>   -- U64-style $D031: speed 0 = 1 MHz, any other = turbo
+						u64_speed <= di_r(3 downto 0);
+						if di_r(3 downto 0) = "0000" then
+							turbo_reg(0) <= '0';
+						else
+							turbo_reg(0) <= '1';
+						end if;
 					when others => null;
 					end case;
 				end if;
@@ -1718,6 +1727,12 @@ readRegisters: process(clk)
 			when "110000" =>
 				if turbo_reg_en = '1' then
 					do <= "111111" & turbo_reg;
+				else
+					do <= (others => '1');
+				end if;
+			when "110001" =>
+				if turbo_reg_en = '1' then
+					do <= "0000" & u64_speed;
 				else
 					do <= (others => '1');
 				end if;

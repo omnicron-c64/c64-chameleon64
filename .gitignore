@@ -14,3 +14,23 @@ build_id.vhd
 *.rpt
 *.smsg
 *.summary
+
+# --- Chameleon port
+# Quartus / DeMiSTify build output
+chameleon64/db/
+chameleon64/incremental_db/
+chameleon64/output_files/
+chameleon64/*.log
+chameleon64/*.qsf
+chameleon64/*.qpf
+chameleon64/*_assignment_defaults.qdf
+chameleon64/c64_chameleon64_files.tcl
+chameleon64/PLLJ_PLLSPE_INFO.txt
+fw.log
+firmware/*.o
+firmware/*.asm
+firmware/*.bin
+firmware/*.map
+firmware/controller_rom*.vhd
+# external checkout (symlink to ../DeMiSTify)
+DeMiSTify

@@ -1,0 +1,9 @@
+# Guest core (MiST C64)
+project.qip
+# DeMiSTify controller
+DeMiSTify/controller/controller.qip
+# Guest component declaration and DeMiSTify settings
+demistify_config_pkg.vhd
+# Controller firmware built for this core
+firmware/controller_rom1_byte.vhd
+firmware/controller_rom2_byte.vhd

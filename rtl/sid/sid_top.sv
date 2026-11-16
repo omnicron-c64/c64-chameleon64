@@ -83,6 +83,7 @@ wire [11:0] acc_t[N*3];
 reg  [17:0] audio[N];
 
 reg   [7:0] bus_data[N];
+reg  [12:0] bus_ttl[N];  // data-bus latch decay (real SID: write-only regs read $00 after a few ms)
 reg  [12:0] Fc_offset[N];
 
 generate
@@ -177,10 +178,18 @@ generate
 				Filter_Fc[i]       <= 0;
 				Filter_Res_Filt[i] <= 0;
 				Filter_Mode_Vol[i] <= 0;
+				bus_data[i]        <= 0;
+				bus_ttl[i]         <= 0;
 			end
-			else if(cs[i]) begin
+			else begin
+			if (ce_1m) begin
+				if (bus_ttl[i] != 0) bus_ttl[i] <= bus_ttl[i] - 1'd1;
+				else bus_data[i] <= 0;
+			end
+			if(cs[i]) begin
 				if (we) begin
 					bus_data[i] <= data_in;
+					bus_ttl[i]  <= 13'h1D00;
 					case (addr)
 						5'h00: Voice_1_Freq[i][7:0] <= data_in;
 						5'h01: Voice_1_Freq[i][15:8]<= data_in;
@@ -217,6 +226,7 @@ generate
 						5'h1c: bus_data[i] = Misc_Env3[i];
 					endcase
 				end
+			end
 			end
 		end
 	end

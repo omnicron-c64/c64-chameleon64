@@ -96,6 +96,18 @@ module c64_mist_top(
 	input         MIDI_IN,
 	output        MIDI_OUT,
 `endif
+`ifdef DEMISTIFY
+	input  [63:0] C64_KEYS,
+	input         C64_RESTORE_N,
+	input         C64_FREEZE_N,
+	input         C64_RESET_N,
+	input         DBG_REQ,
+	input         DBG_WE,
+	input  [31:0] DBG_ADDR,
+	input   [7:0] DBG_WDATA,
+	output  [7:0] DBG_RDATA,
+	output        DBG_ACK,
+`endif
 	input         UART_RX,
 	output        UART_TX
 
@@ -196,6 +208,18 @@ c64_mist
 	.BUILD_DATE(`BUILD_DATE)
 )
 c64_mist (
+`ifdef DEMISTIFY
+	.C64_KEYS(C64_KEYS),
+	.C64_RESTORE_N(C64_RESTORE_N),
+	.C64_FREEZE_N(C64_FREEZE_N),
+	.C64_RESET_N(C64_RESET_N),
+	.DBG_REQ(DBG_REQ),
+	.DBG_WE(DBG_WE),
+	.DBG_ADDR(DBG_ADDR),
+	.DBG_WDATA(DBG_WDATA),
+	.DBG_RDATA(DBG_RDATA),
+	.DBG_ACK(DBG_ACK),
+`endif
 `ifdef CLOCK_IN_50
 	.CLOCK_IN(CLOCK_50),
 `else

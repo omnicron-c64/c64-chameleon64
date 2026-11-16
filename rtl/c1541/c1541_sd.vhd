@@ -64,6 +64,8 @@ port(
    c1541rom_addr   : in std_logic_vector(13 downto 0);
    c1541rom_data   : in std_logic_vector(7 downto 0);
    c1541rom_wr     : in std_logic;
+   c1541rom_ext_addr : out std_logic_vector(13 downto 0);
+   c1541rom_ext_data : in  std_logic_vector(7 downto 0);
 
 	dbg_track_num_dbl : out std_logic_vector(6 downto 0);
 	dbg_sd_busy     : out std_logic;
@@ -193,6 +195,8 @@ begin
     c1541rom_addr   => c1541rom_addr,
     c1541rom_data   => c1541rom_data,
     c1541rom_wr     => c1541rom_wr,
+    c1541rom_ext_addr => c1541rom_ext_addr,
+    c1541rom_ext_data => c1541rom_ext_data,
 
 	 dbg_adr_fetch => dbg_adr_fetch,
 	 dbg_cpu_irq   => open

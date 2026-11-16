@@ -62,6 +62,7 @@ signal bit_cnt     : std_logic_vector(2 downto 0) := (others => '0');
 
 signal sync_in_n   : std_logic;
 signal byte_in_n   : std_logic;
+signal nd_byte_n   : std_logic := '1'; -- no disk: BYTE READY every 8 bit cells (VICE: reads 0 bits)
 
 signal sector      : std_logic_vector(4 downto 0) := (others => '0');
 signal state       : std_logic                    := '0';
@@ -117,7 +118,8 @@ ram_we <=          raw_byte_we when raw = '1' else byte_we;
 ram_di <=     c1541_logic_dout when raw = '1' else byte_out;
 c1541_logic_din <= raw_byte_in when raw = '1' else byte_in;
 
-sync_n <= '1' when ram_ready = '0' or mtr = '0' else
+-- no disk mounted: no SYNC and no bytes, like an empty real drive
+sync_n <= '1' when ram_ready = '0' or mtr = '0' or mounted = '0' else
 	sync_in_n_raw when raw = '1' else
 	sync_in_n;
 
@@ -205,6 +207,7 @@ raw_bit_clk_div <= x"67" when "11",
 process (clk32)
 	variable bit_clk_cnt : std_logic_vector(7 downto 0) := (others => '0');
 	variable raw_bit_clk_cnt : std_logic_vector(7 downto 0) := (others => '0');
+	variable nd_cnt : std_logic_vector(2 downto 0) := (others => '0');
 begin
 	if rising_edge(clk32) then
 
@@ -220,6 +223,8 @@ begin
 			if bit_clk_cnt = 0 then
 				bit_clk_en <= '1';
 				bit_clk_cnt := bit_clk_div;
+				nd_cnt := nd_cnt + '1';
+				if nd_cnt = "000" then nd_byte_n <= '0'; else nd_byte_n <= '1'; end if;
 			else
 				bit_clk_cnt := bit_clk_cnt - '1';
 			end if;
@@ -231,7 +236,7 @@ begin
 				raw_bit_clk_cnt := raw_bit_clk_cnt - '1';
 			end if;
 
-			if ((byte_in_n = '0' and raw = '0') or (byte_in_n_raw = '0' and raw = '1')) and ram_ready = '1' then
+			if ((byte_in_n = '0' and raw = '0') or (byte_in_n_raw = '0' and raw = '1')) and ram_ready = '1' and mounted = '1' then
 				if bit_clk_cnt > X"10" and bit_clk_cnt < X"5E" then
 					byte_n <= '0';
 				end if;

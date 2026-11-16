@@ -8,6 +8,7 @@ module cartridge
 	input         mem_write,				// memory write active
 	input         mem_ce,
 	output        mem_ce_out,
+	output        mem_write_ok,          // 0 = drop this write (Ultimax: no RAM under cart ROM)
 
 	input         clk32,				 		// 32mhz clock source
 	input         reset,						// reset signal
@@ -653,6 +654,9 @@ wire ioe_ce = (IOE && (mem_write ? IOE_wr_ena : IOE_ena));
 wire iof_ce = (IOF && (mem_write ? IOF_wr_ena : IOF_ena));
 
 assign mem_ce_out = !data_oe & (mem_ce | ioe_ce | iof_ce);
+
+// from MiSTer upstream: in Ultimax mode writes to ROML/ROMH space hit no RAM
+assign mem_write_ok = ~(cart_attached & ((romL & ~romL_we) | (romH & ~romH_we)) & exrom_overide & ~game_overide);
 
 //RAM banks are remapped to 64K-128K space
 always @(*) begin

@@ -45,6 +45,9 @@ entity c1541_logic is
     c1541rom_addr   : in std_logic_vector(13 downto 0);
     c1541rom_data   : in std_logic_vector(7 downto 0);
     c1541rom_wr     : in std_logic;
+    -- external (SDRAM) ROM: address out, data in (clk_32M domain)
+    c1541rom_ext_addr : out std_logic_vector(13 downto 0);
+    c1541rom_ext_data : in  std_logic_vector(7 downto 0);
 		
 		dbg_adr_fetch : out std_logic_vector(15 downto 0);  -- dbg DAR
 		dbg_cpu_irq   : out std_logic                       -- dbg DAR
@@ -254,30 +257,9 @@ begin
       DO          => cpu_do
     );
 
-  rom_inst : entity work.gen_rom
-    generic map
-    (
---  	 init_file   => "../roms/JiffyDOS_C1541.hex",               -- DAR tested OK
---	 init_file   => "../roms/25196802.hex",             
---	 init_file   => "../roms/25196801.hex",             
-      INIT_FILE   => "../rtl/roms/std_C1541.mif",   
---     init_file   => "../roms/1541_c000_01_and_e000_06aa.hex",   -- DAR tested OK
-
-
-      DATA_WIDTH  => 8,
-      ADDR_WIDTH   => 14
-    )
-    port map
-    (
-      rdclock     => clk_32M,
-      rdaddress   => cpu_a(13 downto 0),
-      q           => rom_do,
-
-		wrclock     => c1541rom_clk,
-		wraddress   => c1541rom_addr,
-		wren        => c1541rom_wr,
-		data        => c1541rom_data
-    );
+  -- DOS ROM now lives in SDRAM; c64_mist fetches the byte at cpu_a.
+  c1541rom_ext_addr <= cpu_a(13 downto 0);
+  rom_do <= c1541rom_ext_data;
 
   ram_inst : entity work.spram
     generic map
