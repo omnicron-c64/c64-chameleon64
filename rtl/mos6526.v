@@ -494,6 +494,7 @@ end
 wire [4:0] icr_adj = {icr[4:2], timer_b_int, icr[0]};
 
 // Interrupt Control
+reg        icr_wr_prev;   // ICR was written in the previous bus cycle
 always @(posedge clk) begin
   reg  [4:0] imr_reg;
 
@@ -504,6 +505,7 @@ always @(posedge clk) begin
     int_reset <= 0;
     clr_win   <= 0;
     icr7      <= 0;
+    icr_wr_prev <= 0;
   end
   else begin
     if (!mode & phi2_n & int_reset) begin
@@ -511,7 +513,14 @@ always @(posedge clk) begin
       int_reset <= 0;
     end
 
-    if (wr && rs == 4'hd) imr_reg <= db_in[7] ? imr | db_in[4:0] : imr & ~db_in[4:0];
+    if (wr && rs == 4'hd) begin
+      imr_reg <= db_in[7] ? imr | db_in[4:0] : imr & ~db_in[4:0];
+      // 6526: when the ICR is written in two consecutive cycles (read-modify-
+      // write), the second write takes effect at PHI2, before the CPU samples
+      // the interrupt line. (The 8521 path already updates imr every clock.)
+      if (!mode && icr_wr_prev) imr <= db_in[7] ? imr | db_in[4:0] : imr & ~db_in[4:0];
+    end
+    if (phi2_n) icr_wr_prev <= wr && rs == 4'hd;
     if (rd && rs == 4'hd) int_reset <= 1;
 
     if (phi2_p | mode) begin
