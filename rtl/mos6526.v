@@ -84,6 +84,16 @@ reg [ 2:0] cnt_pulsecnt;
 
 reg        int_reset;
 
+// Keep the just-acknowledged flags visible for the next 8521 bus cycle.
+reg [7:0] acknowledged_icr;
+wire [7:0] live_icr = {~irq_n, 2'b00, icr};
+always @(posedge clk) begin
+  if (!res_n)
+    acknowledged_icr <= 8'h00;
+  else if (phi2_p)
+    acknowledged_icr <= (mode && int_reset) ? live_icr : 8'h00;
+end
+
 wire       rd = phi2_n & !cs_n & rw;
 wire       wr = phi2_n & !cs_n & !rw;
 
@@ -105,7 +115,7 @@ always @(posedge clk) begin
       4'ha: db_out <= {1'b0, tod_latch[17:11]};
       4'hb: db_out <= {tod_latch[23], 2'h0, tod_latch[22:18]};
       4'hc: db_out <= sdr;
-      4'hd: db_out <= {~irq_n, 2'b00, icr};
+      4'hd: db_out <= live_icr | (mode ? acknowledged_icr : 8'h00);
       4'he: db_out <= {cra[7:5], 1'b0, cra[3:0]};
       4'hf: db_out <= {crb[7:5], 1'b0, crb[3:0]};
     endcase
