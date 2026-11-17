@@ -2,7 +2,8 @@
 // by Rayne
 // Timers & Interrupts are rewritten by slingshot
 // Passes all Lorenz CIA Timer tests
-// Passes all CIA tests from VICE, except dd0dtest
+// Passes all CIA tests from VICE, including dd0dtest (both CIA modes; interrupt
+// latch behaviour after reDIP-CIA, c64-chameleon64 v0.2.1)
 
 module mos6526 (
   input  wire       mode,   // 0 - 6526 "old", 1 - 8521 "new"

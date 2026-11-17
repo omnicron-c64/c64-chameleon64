@@ -28,6 +28,7 @@ plus Ultimate 64-style extras.
   (fixes: cartridge SDRAM requests limited to C64 slots, Ultimax write protection from upstream MiSTer,
   SID bus-latch decay so `$D600` reads `$00` on a C64).
 - **Empty drive** behaves like a real 1541 (no SYNC) - `74, DRIVE NOT READY`.
+- **CIA interrupt timing** passes VICE `dd0dtest` in both CIA modes - see below.
 - **Buttons**: left = menu, middle = cartridge freeze, right = C64 reset (keeps settings and mounted disk),
   middle + right held = back to the Chameleon menu (slot 0).
 - **USB debugging** with `chacocmd` while the core runs (pwsoft `chameleon_usb.vhd`):
@@ -36,6 +37,27 @@ plus Ultimate 64-style extras.
     4-5 = turbo cycles per frame, 6 = IEC hold/turbo state, other even/odd pairs = live CPU address samples
   - write `0x40000010`: turbo override (0 menu, 1 off, 2 on, 3 software)
   - **flash only after `chacocmd --start 0`**, with the SD card removed
+
+## CIA accuracy: dd0dtest passes
+
+The CIA model this core inherits from MiST/MiSTer (`rtl/mos6526.v`) has long carried the note
+"passes all CIA tests from VICE, except dd0dtest". Wilfred Bos's
+[dd0dtest](https://github.com/libsidplayfp/VICE-testprogs/tree/master/CIA/dd0dtest) checks, cycle by
+cycle, what `$DD0D` (the interrupt control register) returns and when the NMI fires while instructions
+read and write it - including read-modify-write instructions such as `INC $DD0D,X`.
+
+As of v0.2.1 it **passes completely in both CIA modes** on a Chameleon V1 (verified on hardware):
+
+| Mode | Fixed cases | Change |
+|------|-------------|--------|
+| New (8521) | `$17`, `$18`, `$19` | A `$DD0D` read keeps its clear active through the next cycle: an interrupt arriving then sets ICR bit 7 but asserts /IRQ one cycle later (never, if a further read acknowledges it). ICR bit 7 is its own latch, and flags cleared by a read stay visible on the next read. |
+| Old (6526) | `$11` | When `$DD0D` is written in two consecutive cycles (read-modify-write), the second write changes the interrupt mask immediately, before the CPU samples the interrupt line. |
+
+Each change is gated to its own CIA mode. The behaviour follows Dag Lem's
+[reDIP-CIA](https://github.com/daglem/reDIP-CIA) (`cia_interrupt.sv`); every case was compared with
+reDIP in bus-level simulation (Icarus Verilog against reDIP's Verilator model) and then run on hardware,
+where a CPU cycle trace captured over USB showed the failing cycles. The fixes are plain RTL in
+`rtl/mos6526.v`, so they should carry over to other cores that use this CIA model.
 
 ## Building
 
