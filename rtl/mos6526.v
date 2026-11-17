@@ -84,9 +84,16 @@ reg [ 2:0] cnt_pulsecnt;
 
 reg        int_reset;
 
-// Keep the just-acknowledged flags visible for the next 8521 bus cycle.
+// 8521 ("new") interrupt behaviour, after reDIP-CIA cia_interrupt.sv:
+// - an ICR read clears for the whole following cycle (clr_win). A source that
+//   fires in that cycle sets ICR bit 7, but /IRQ is only asserted one cycle
+//   later (and not at all if a further read acknowledges it first).
+// - ICR bit 7 is its own latch (icr7), so it can read 1 while /IRQ stays high.
+// - flags cleared by a read stay visible for one more bus cycle.
+reg        clr_win;
+reg        icr7;
 reg [7:0] acknowledged_icr;
-wire [7:0] live_icr = {~irq_n, 2'b00, icr};
+wire [7:0] live_icr = {mode ? icr7 : ~irq_n, 2'b00, icr};
 always @(posedge clk) begin
   if (!res_n)
     acknowledged_icr <= 8'h00;
@@ -495,6 +502,8 @@ always @(posedge clk) begin
     imr_reg   <= 5'h00;
     irq_n     <= 1'b1;
     int_reset <= 0;
+    clr_win   <= 0;
+    icr7      <= 0;
   end
   else begin
     if (!mode & phi2_n & int_reset) begin
@@ -507,12 +516,20 @@ always @(posedge clk) begin
 
     if (phi2_p | mode) begin
       imr <= imr_reg;
-      irq_n <= irq_n ? ~|(imr & icr_adj) : irq_n;
+      // 8521: no new /IRQ assertion while a read is still clearing
+      if (!(mode & (int_reset | clr_win)))
+        irq_n <= irq_n ? ~|(imr & icr_adj) : irq_n;
+    end
+
+    if (mode) begin
+      if (|(imr & icr_adj)) icr7 <= 1;
+      if (phi2_p) clr_win <= int_reset;
     end
 
     if (mode & phi2_p & int_reset) begin
       irq_n <= 1;
       int_reset <= 0;
+      icr7 <= 0;
     end
   end
 end
